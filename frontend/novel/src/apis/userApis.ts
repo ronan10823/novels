@@ -1,7 +1,7 @@
 // 서버 연동 담당
 
 import axios from 'axios';
-import type { LoginForm } from '../types/user';
+import type { LoginForm, RegisterForm } from '../types/user';
 
 export const API_SERVER_HOST = '/api/member';
 
@@ -16,5 +16,11 @@ export const postLogin = async (loginParam: LoginForm) => {
     headers: { 'Content-Type': 'x-www-form-urlencoded' },
   });
   console.log('서버 도착 ', res);
+  return res.data;
+};
+
+// 회원가입 post
+export const postRegister = async (registerParam: RegisterForm) => {
+  const res = await axios.post(`${API_SERVER_HOST}/register`, registerParam);
   return res.data;
 };

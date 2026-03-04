@@ -41,7 +41,8 @@ public class JWTCheckFilter extends OncePerRequestFilter {
         log.trace("check uri {}", path);
 
         if (path.startsWith("/swagger-ui") || path.startsWith("/v3/api-docs")
-                || path.startsWith("/api/member/login")) {
+                || path.startsWith("/api/member/login")
+                || path.startsWith("/api/member/register")) {
             return true;
         }
 

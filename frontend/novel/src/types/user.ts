@@ -18,3 +18,9 @@ export type LoginForm = {
   email: string;
   pw: string;
 };
+
+export type RegisterForm = {
+  email: string;
+  password: string;
+  nickname: string;
+};
