@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
     paths:
-      - "frontend/novels/**"
+      - "frontend/novel/**"
       - "backend/novels/**"
       - ".github/workflows/deploy.yml"
 
@@ -25,7 +25,7 @@ jobs:
           cache-dependency-path: "**/package-lock.json"
 
       - name: Build frontend
-        working-directory: frontend/novels
+        working-directory: frontend/novel
         run: |
           npm ci
           npm run build
@@ -52,7 +52,7 @@ jobs:
           mkdir -p artifacts/frontend artifacts/backend
 
           # frontend dist
-          cp -r frontend/novels/dist/* artifacts/frontend/
+          cp -r frontend/novel/dist/* artifacts/frontend/
 
           # backend jar -> app.jar (plain.jar 제외)
           JAR_PATH=$(ls backend/novels/build/libs/*.jar | grep -v -- '-plain\.jar' | head -n 1)
