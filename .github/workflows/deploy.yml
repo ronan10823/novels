@@ -1,94 +1,119 @@
-# This workflow will build and push a new container image to Amazon ECR,
-# and then will deploy a new task definition to Amazon ECS, when there is a push to the "main" branch.
-#
-# To use this workflow, you will need to complete the following set-up steps:
-#
-# 1. Create an ECR repository to store your images.
-#    For example: `aws ecr create-repository --repository-name my-ecr-repo --region us-east-2`.
-#    Replace the value of the `ECR_REPOSITORY` environment variable in the workflow below with your repository's name.
-#    Replace the value of the `AWS_REGION` environment variable in the workflow below with your repository's region.
-#
-# 2. Create an ECS task definition, an ECS cluster, and an ECS service.
-#    For example, follow the Getting Started guide on the ECS console:
-#      https://us-east-2.console.aws.amazon.com/ecs/home?region=us-east-2#/firstRun
-#    Replace the value of the `ECS_SERVICE` environment variable in the workflow below with the name you set for the Amazon ECS service.
-#    Replace the value of the `ECS_CLUSTER` environment variable in the workflow below with the name you set for the cluster.
-#
-# 3. Store your ECS task definition as a JSON file in your repository.
-#    The format should follow the output of `aws ecs register-task-definition --generate-cli-skeleton`.
-#    Replace the value of the `ECS_TASK_DEFINITION` environment variable in the workflow below with the path to the JSON file.
-#    Replace the value of the `CONTAINER_NAME` environment variable in the workflow below with the name of the container
-#    in the `containerDefinitions` section of the task definition.
-#
-# 4. Store an IAM user access key in GitHub Actions secrets named `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-#    See the documentation for each action used below for the recommended IAM policies for this IAM user,
-#    and best practices on handling the access key credentials.
-
-name: Deploy to Amazon ECS
+name: Deploy Frontend + Backend (Docker)
 
 on:
   push:
-    branches: [ "main" ]
-
-env:
-  AWS_REGION: MY_AWS_REGION                   # set this to your preferred AWS region, e.g. us-west-1
-  ECR_REPOSITORY: MY_ECR_REPOSITORY           # set this to your Amazon ECR repository name
-  ECS_SERVICE: MY_ECS_SERVICE                 # set this to your Amazon ECS service name
-  ECS_CLUSTER: MY_ECS_CLUSTER                 # set this to your Amazon ECS cluster name
-  ECS_TASK_DEFINITION: MY_ECS_TASK_DEFINITION # set this to the path to your Amazon ECS task definition
-                                               # file, e.g. .aws/task-definition.json
-  CONTAINER_NAME: MY_CONTAINER_NAME           # set this to the name of the container in the
-                                               # containerDefinitions section of your task definition
-
-permissions:
-  contents: read
+    branches: ["main"]
+    paths:
+      - "frontend/novels/**"
+      - "backend/novels/**"
+      - ".github/workflows/deploy.yml"
 
 jobs:
   deploy:
-    name: Deploy
     runs-on: ubuntu-latest
-    environment: production
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      # ---------- Frontend (Vite) ----------
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "**/package-lock.json"
 
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+      - name: Build frontend
+        working-directory: frontend/novels
+        run: |
+          npm ci
+          npm run build
 
-    - name: Build, tag, and push image to Amazon ECR
-      id: build-image
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        # Build a docker container and
-        # push it to ECR so that it can
-        # be deployed to ECS.
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      # ---------- Backend (Spring Boot) ----------
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: "gradle"
 
-    - name: Fill in the new image ID in the Amazon ECS task definition
-      id: task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: ${{ env.ECS_TASK_DEFINITION }}
-        container-name: ${{ env.CONTAINER_NAME }}
-        image: ${{ steps.build-image.outputs.image }}
+      # gradlew 실행 권한 부여
+      - name: Build backend
+        working-directory: backend/novels
+        run: |
+          chmod +x gradlew
+          ./gradlew clean build -x test
 
-    - name: Deploy Amazon ECS task definition
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-      with:
-        task-definition: ${{ steps.task-def.outputs.task-definition }}
-        service: ${{ env.ECS_SERVICE }}
-        cluster: ${{ env.ECS_CLUSTER }}
-        wait-for-service-stability: true
+      # ---------- Prepare artifacts ----------
+      - name: Prepare artifacts
+        run: |
+          set -e  # 에러 발생 시 즉시 종료
+          mkdir -p artifacts/frontend artifacts/backend
+
+          # frontend dist
+          cp -r frontend/novels/dist/* artifacts/frontend/
+
+          # backend jar -> app.jar (plain.jar 제외)
+          JAR_PATH=$(ls backend/novels/build/libs/*.jar | grep -v -- '-plain\.jar' | head -n 1)
+          if [ -z "$JAR_PATH" ]; then
+            echo "No runnable jar found in novels/backend/build/libs"
+            ls -al backend/novels/build/libs || true
+            exit 1
+          fi
+
+          cp "$JAR_PATH" artifacts/backend/app.jar
+          cp backend/novels/Dockerfile artifacts/backend/Dockerfile
+          cp backend/novels/docker-compose.yml artifacts/backend/docker-compose.yml
+
+      # ---------- Deploy ----------
+      - name: Install ssh + rsync
+        run: sudo apt-get update && sudo apt-get install -y openssh-client rsync
+
+      - name: Combined Deploy (Frontend + Backend)
+        env:
+          HOST: ${{ secrets.SERVER_HOST }}
+          PORT: ${{ secrets.SERVER_PORT }}
+          USER: ${{ secrets.SERVER_USER }}
+          FE_DIR: ${{ secrets.DEPLOY_FRONTEND_DIR }}
+          BE_DIR: ${{ secrets.DEPLOY_BACKEND_DIR }}
+        run: |
+          # 1. SSH 키 설정
+          mkdir -p ~/.ssh
+          rm -f ~/.ssh/cm-* # 기존에 남아있을지 모르는 연결 소켓 삭제
+          cat << 'EOF' > ./private_key
+          ${{ secrets.SERVER_SSH_RSA }}
+          EOF
+          chmod 600 ./private_key
+
+          # 2. 공통 SSH 옵션 설정 (재사용을 위한 소켓 설정 포함)
+          # ControlMaster를 쓰면 첫 연결 이후는 세션 생성 생략 가능 (속도 개선)
+          SSH_OPTS="-p $PORT -i ./private_key -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=~/.ssh/cm-%r@%h:%p -o ControlPersist=60s"
+
+          # 3. 데이터 전송 (rsync 연달아 실행)
+          echo ">>> 전송 시작: Frontend"
+          rsync -avz --delete -e "ssh $SSH_OPTS" artifacts/frontend/ $USER@$HOST:$FE_DIR/
+
+          echo ">>> 전송 시작: Backend"
+          rsync -avz --delete -e "ssh $SSH_OPTS" artifacts/backend/ $USER@$HOST:$BE_DIR/
+
+          # 4. 서버 원격 명령 실행 (Docker 및 Nginx)
+          echo ">>> 서버 리스타트 및 설정 적용"
+          ssh $SSH_OPTS $USER@$HOST "bash -lc '
+            cd $BE_DIR
+
+            export OPENAI_API_KEY=\"${{ secrets.OPENAI_API_KEY }}\"
+            export MYSQL_ROOT_PASSWORD=\"${{ secrets.MYSQL_ROOT_PASSWORD }}\"
+            export MYSQL_PASSWORD=\"${{ secrets.MYSQL_PASSWORD }}\"
+            
+            # 컨테이너 갱신
+            docker compose up -d --build
+            docker image prune -f
+            
+            # Nginx 리로드 (정적 파일 및 프록시 설정 반영)
+            sudo systemctl reload nginx
+          '"
+
+          # 5. 보안을 위해 키 삭제
+          rm ./private_key
+          rm -f ~/.ssh/cm-*
