@@ -19,7 +19,7 @@ function RegisterForm() {
     try {
       await postRegister(form);
       alert('회원가입 성공');
-      navigate('/user/login');
+      navigate('/member/login');
     } catch (err: any) {
       alert(err.response?.data?.message || '회원가입 실패');
     }
